@@ -30,8 +30,7 @@ int main(int argc, char** argv) {
 
 
     int* wack_ptr =  (int *)0x42424242DEADBEEF;
-    
-    //printf("TEST : %i",*wack_ptr);
+    //printf("YOYO : %i",*wack_ptr);
 
     // Prints array A from question
     if (0) {
