@@ -37,7 +37,7 @@ run_serial: purge serial
 	./serial
 
 run_parallel: purge parallel
-	mpirun -np 4 -oversubscribe ./parallel
+	mpirun -np 8 ./parallel
 
 run_parallel_3: purge parallel
 	mpirun -np 3 -oversubscribe ./parallel

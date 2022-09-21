@@ -12,6 +12,8 @@
 
 #define WALLTIME(t) ((double)(t).tv_sec + 1e-6 * (double)(t).tv_usec)
 
+enum DIRECTIONS {DOWN, UP, LEFT, RIGHT};
+
 MPI_Comm
     cart;
 MPI_Datatype
@@ -80,6 +82,9 @@ void domain_init ();
 void domain_save ( int_t iteration );
 void domain_finalize ( void );
 
+// new functions
+void border_exchange( void );
+
 
 void
 swap ( real_t** t1, real_t** t2 )
@@ -144,10 +149,11 @@ main ( int argc, char **argv )
 
     gettimeofday ( &t_start, NULL );
 
-    /*
     for ( int_t iteration = 0; iteration<=max_iteration; iteration++ )
     {
         // TODO 5 Implement border exchange
+
+        border_exchange();
 
         // TODO 4 Change application of boundary condition to match cartesian topology
         boundary_condition ( mass[0], 1 );
@@ -176,7 +182,6 @@ main ( int argc, char **argv )
         swap ( &mass_velocity_x[0], &mass_velocity_x[1] );
         swap ( &mass_velocity_y[0], &mass_velocity_y[1] );
     }
-    */
 
     domain_finalize();
 
@@ -191,26 +196,44 @@ main ( int argc, char **argv )
     exit ( EXIT_SUCCESS );
 }
 
+void 
+border_exchange( void )
+{
+  
+
+    int neighbour_ranks[4];
+    MPI_Cart_shift( cart , 0 , 1 , &neighbour_ranks[LEFT] , &neighbour_ranks[RIGHT]);
+    MPI_Cart_shift( cart , 1 , 1 , &neighbour_ranks[UP] , &neighbour_ranks[DOWN]);
+    
+    if(coords[0]%2 == 0)
+    {
+        
+    }
+
+    int a = 0/2;
+    printf("%d",a);
+}
+
 
 void
 time_step ( void )
 {
     // TODO 3 Update the area of iteration in the time step
-    for ( int_t y=1; y<=N; y++ )
-        for ( int_t x=1; x<=N; x++ )
+    for ( int_t y=1; y<=local_rows; y++ )
+        for ( int_t x=1; x<=local_cols; x++ )
         {
             U(y,x) = PNU(y,x) / PN(y,x);
             V(y,x) = PNV(y,x) / PN(y,x);
         }
 
-    for ( int_t y=1; y<=N; y++ )
-        for ( int_t x=1; x<=N; x++ )
+    for ( int_t y=1; y<=local_rows; y++ )
+        for ( int_t x=1; x<=local_cols; x++ )
         {
             PNUV(y,x) = PN(y,x) * U(y,x) * V(y,x);
         }
 
-    for ( int_t y=0; y<=N+1; y++ )
-        for ( int_t x=0; x<=N+1; x++ )
+    for ( int_t y=0; y<=local_rows+1; y++ )
+        for ( int_t x=0; x<=local_cols+1; x++ )
         {
             DU(y,x) = PN(y,x) * U(y,x) * U(y,x)
                     + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
@@ -218,8 +241,8 @@ time_step ( void )
                     + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
         }
 
-    for ( int_t y=1; y<=N; y++ )
-        for ( int_t x=1; x<=N; x++ )
+    for ( int_t y=1; y<=local_rows; y++ )
+        for ( int_t x=1; x<=local_cols; x++ )
         {
             PNU_next(y,x) = 0.5*( PNU(y,x+1) + PNU(y,x-1) ) - dt*(
                             ( DU(y,x+1) - DU(y,x-1) ) / (2*dx)
@@ -227,8 +250,8 @@ time_step ( void )
             );
         }
 
-    for ( int_t y=1; y<=N; y++ )
-        for ( int_t x=1; x<=N; x++ )
+    for ( int_t y=1; y<=local_rows; y++ )
+        for ( int_t x=1; x<=local_cols; x++ )
         {
             PNV_next(y,x) = 0.5*( PNV(y+1,x) + PNV(y-1,x) ) - dt*(
                             ( DV(y+1,x) - DV(y-1,x) ) / (2*dx)
@@ -236,8 +259,8 @@ time_step ( void )
             );
         }
 
-    for ( int_t y=1; y<=N; y++ )
-        for ( int_t x=1; x<=N; x++ )
+    for ( int_t y=1; y<=local_rows; y++ )
+        for ( int_t x=1; x<=local_cols; x++ )
         {
             PN_next(y,x) = 0.25*( PN(y,x+1) + PN(y,x-1) + PN(y+1,x) + PN(y-1,x) ) - dt*(
                            ( PNU(y,x+1) - PNU(y,x-1) ) / (2*dx)
@@ -252,15 +275,61 @@ boundary_condition ( real_t *domain_variable, int sign )
 {
     // TODO 4 Change application of boundary condition to match cartesian topology
     #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
-    VAR(   0, 0   ) = sign*VAR(   2, 2   );
-    VAR( N+1, 0   ) = sign*VAR( N-1, 2   );
-    VAR(   0, N+1 ) = sign*VAR(   2, N-1 );
-    VAR( N+1, N+1 ) = sign*VAR( N-1, N-1 );
 
-    for ( int_t y=1; y<=N; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
-    for ( int_t y=1; y<=N; y++ ) VAR(   y, N+1 ) = sign*VAR(   y, N-1 );
-    for ( int_t x=1; x<=N; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
-    for ( int_t x=1; x<=N; x++ ) VAR( N+1, x   ) = sign*VAR( N-1, x   );
+    // in n x m process grid
+
+    // left edge
+    if (coords[0] == 0)
+    {
+        for ( int_t y=1; y<=local_rows; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
+
+        // lower left corner
+        // 0 x m
+        if (coords[1] == dims[1]-1)
+        {
+            VAR(   0, 0   ) = sign*VAR(   2, 2   );
+        }
+
+        // upper left corner
+        // 0 x 0 
+        if (coords[1] == 0)
+        {
+            VAR(   local_rows+1, 0   ) = sign*VAR(   local_rows-1, 2   );
+        }
+    }
+
+    // right edge
+    if (coords[0] == dims[0]-1)
+    {
+        for ( int_t y=1; y<=local_rows; y++ ) VAR(   y, local_cols+1 ) = sign*VAR(   y, local_cols-1 );
+
+        // lower right corner
+        // n x m
+        if (coords[1] == dims[1]-1)
+        {
+            VAR(   0, local_cols+1   ) = sign*VAR(   2, local_cols-1   );
+        }
+
+        // upper right corner
+        // n x 0
+        if (coords[1] == 0)
+        {
+            VAR(   local_rows+1, local_cols+1   ) = sign*VAR(   local_rows-1, local_cols-1   );
+        }
+    }
+
+    // upper edge
+    if (coords[1] == 0)
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
+    }
+
+    // lower edge
+    if (coords[1] == dims[1]-1)
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
+    }
+
     #undef VAR
 }
 
@@ -272,8 +341,8 @@ create_types ( void )
     MPI_Comm_rank ( cart, &cart_rank );
     MPI_Cart_coords ( cart, cart_rank, 2, cart_offset);
 
-    MPI_Type_create_subarray ( 2, (int[2]) { local_rows+2, local_cols+2 }, (int[2]) { local_cols, local_rows }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
-    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_rows, local_cols }, (int[2]) { cart_offset[0] * local_cols_standard, cart_offset[1] * local_rows_standard}, MPI_ORDER_C, MPI_DOUBLE, &grid );
+    MPI_Type_create_subarray ( 2, (int[2]) { local_cols+2, local_rows+2 }, (int[2]) { local_cols, local_rows }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
+    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_cols, local_rows }, (int[2]) { cart_offset[0] * local_cols_standard, cart_offset[1] * local_rows_standard}, MPI_ORDER_C, MPI_DOUBLE, &grid );
 
     MPI_Type_commit ( &subgrid );
     MPI_Type_commit ( &grid ) ;
@@ -288,25 +357,25 @@ domain_init ()
     local_rows  = N;
     local_cols  = N;
 
-    int spare_rows = N%dims_[1];
-    int spare_cols = N%dims_[0];
-    int temp_local_rows = N/dims_[1];
-    int temp_local_cols = N/dims_[0];
+    int spare_rows = N%dims[1];
+    int spare_cols = N%dims[0];
+    int temp_local_rows = N/dims[1];
+    int temp_local_cols = N/dims[0];
 
-    // Local dimension i have at most 1 element more than N/dims_[i], but the last process will have less elements.
+    // Local dimension i have at most 1 element more than N/dims[i], but the last process will have less elements.
     if (spare_rows == 0)
     {
         local_rows  = temp_local_rows;
         local_rows_standard = temp_local_rows;
     }
-    else if (coords[1] < dims_[1]-1)
+    else if (coords[1] < dims[1]-1)
     {
         local_rows  = temp_local_rows + 1;
         local_rows_standard= temp_local_rows + 1;
     }
     else 
     {
-        local_rows = N/dims_[1] - (dims_[1]-1)+spare_rows;
+        local_rows = N/dims[1] - (dims[1]-1)+spare_rows;
         local_rows_standard = temp_local_cols + 1;
     }
 
@@ -316,14 +385,14 @@ domain_init ()
         local_cols  = temp_local_cols;
         local_cols_standard = temp_local_cols;
     }
-    else if (coords[0] < dims_[0]-1)
+    else if (coords[0] < dims[0]-1)
     {
         local_cols  = temp_local_cols + 1;
         local_cols_standard= temp_local_cols + 1;
     }
     else 
     {
-        local_cols = N/dims_[0] - (dims_[0]-1)+spare_cols;
+        local_cols = N/dims[0] - (dims[0]-1)+spare_cols;
         local_cols_standard = temp_local_cols + 1;
     }
 
