@@ -63,6 +63,14 @@ real_t
     dx,
     dt;
 
+// MPI Dataype
+
+MPI_Datatype 
+    dim_1_triple,
+    dim_1_single,
+    dim_0_triple,
+    dim_0_single;
+
 #define PN(y,x)         mass[0][(y)*(local_cols+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(local_cols+2)+(x)]
 #define PNU(y,x)        mass_velocity_x[0][(y)*(local_cols+2)+(x)]
@@ -199,19 +207,33 @@ main ( int argc, char **argv )
 void 
 border_exchange( void )
 {
-  
+    
 
     int neighbour_ranks[4];
-    MPI_Cart_shift( cart , 0 , 1 , &neighbour_ranks[LEFT] , &neighbour_ranks[RIGHT]);
-    MPI_Cart_shift( cart , 1 , 1 , &neighbour_ranks[UP] , &neighbour_ranks[DOWN]);
-    
+    MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
+    MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[UP], &neighbour_ranks[DOWN]);
+
     if(coords[0]%2 == 0)
     {
-        
+        // Send "down"
+        MPI_Ssend( &PN(1,1), 1, dim_1_triple, neighbour_ranks[DOWN], 0, cart);
+        MPI_Recv( &PN(local_rows+ 1, 1), 1 , dim_1_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+
+        // Send "up"
+        MPI_Ssend( &PN(local_rows,1), 1, dim_1_triple, neighbour_ranks[UP], 1, cart);
+        MPI_Recv( &PN(0,1), 1, dim_1_triple, neighbour_ranks[DOWN], 1, cart, MPI_STATUS_IGNORE);
+
     }
 
-    int a = 0/2;
-    printf("%d",a);
+    if(coords[1]%2 == 0)
+    {
+        MPI_Ssend( &PN(1,local_cols), 1, dim_0_triple, neighbour_ranks[RIGHT], 2, cart);
+        MPI_Recv( &PN(1,0), 1, dim_0_triple, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
+
+        // Send left
+        MPI_Ssend( &PN(1,1), 1, dim_0_triple, neighbour_ranks[LEFT], 3, cart);
+        MPI_Recv( &PN(1,local_cols+1), 1, dim_0_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
+    }
 }
 
 
@@ -346,6 +368,33 @@ create_types ( void )
 
     MPI_Type_commit ( &subgrid );
     MPI_Type_commit ( &grid ) ;
+
+    // added types
+
+    MPI_Type_vector( 1, local_cols-1, local_cols+2, MPI_DOUBLE, &dim_1_single);
+    MPI_Type_vector( local_rows-1, 1, local_cols+2, MPI_DOUBLE, &dim_0_single);
+
+    MPI_Type_commit( &dim_1_single);
+    MPI_Type_commit( &dim_0_single);
+
+    
+    int lengths[3] = {1,1,1};
+
+    MPI_Aint disp[3];
+
+    MPI_Get_address( &mass[0][0] , &disp[0]);
+    MPI_Get_address( &mass_velocity_x[0][0] , &disp[1]);
+    MPI_Get_address( &mass_velocity_y[0][0] , &disp[2]);
+
+    disp[2] = disp[2] - disp[1];
+    disp[1] = disp[1] - disp[0];
+    disp[0] = 0;
+
+    MPI_Type_create_hindexed( 3, lengths, disp, dim_1_single, &dim_1_triple);
+    MPI_Type_create_hindexed( 3, lengths, disp, dim_0_single, &dim_0_triple );
+
+    MPI_Type_commit(&dim_1_triple);
+    MPI_Type_commit(&dim_0_triple);
 }
 
 
@@ -417,8 +466,8 @@ domain_init ()
 
     // TODO 2 Find the local x and y offsets for each process' subgrid
     // Hint: you can get useful information from the cartesian communicator
-    int_t local_x_offset = coords[0]*local_cols_standard;
-    int_t local_y_offset = coords[1]*local_rows_standard;
+    int_t local_x_offset = (coords[0])*local_cols_standard;
+    int_t local_y_offset = (dims[1]-coords[1])*local_rows_standard;
 
     for ( int_t y=1; y<=local_rows; y++ )
     {
