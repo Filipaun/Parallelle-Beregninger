@@ -39,12 +39,6 @@ run_serial: purge serial
 run_parallel: purge parallel
 	mpirun -np 4 ./parallel
 
-run_parallel_3: purge parallel
-	mpirun -np 3 -oversubscribe ./parallel
-
-debug: purge parallel
-	./tmpi 4 gdb -x script.gdb ./parallel
-
 check_serial: purge serial
 	./check/check_serial_solution.sh
 
