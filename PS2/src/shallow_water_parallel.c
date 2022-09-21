@@ -213,7 +213,7 @@ border_exchange( void )
     MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
     MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[UP], &neighbour_ranks[DOWN]);
 
-    
+    /*
     if(coords[0]%2 == 0)
     {
         // Send "down"
@@ -226,7 +226,7 @@ border_exchange( void )
 
     }
 
-    if(coords[1]%2 == 0)
+    if(coords[0]%2 == 0)
     {
         MPI_Ssend( &PN(1,local_cols), 1, dim_0_triple, neighbour_ranks[RIGHT], 2, cart);
         MPI_Recv( &PN(1,0), 1, dim_0_triple, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
@@ -235,6 +235,7 @@ border_exchange( void )
         MPI_Ssend( &PN(1,1), 1, dim_0_triple, neighbour_ranks[LEFT], 3, cart);
         MPI_Recv( &PN(1,local_cols+1), 1, dim_0_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
     }
+    */
 }
 
 
@@ -302,53 +303,53 @@ boundary_condition ( real_t *domain_variable, int sign )
     // in n x m process grid
 
     // left edge
-    if (coords[0] == 0)
+    if (coords[1] == 0)
     {
         for ( int_t y=1; y<=local_rows; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
 
         // lower left corner
         // 0 x m
-        if (coords[1] == dims[1]-1)
+        if (coords[0] == dims[0]-1)
         {
             VAR(   0, 0   ) = sign*VAR(   2, 2   );
         }
 
         // upper left corner
         // 0 x 0 
-        if (coords[1] == 0)
+        if (coords[0] == 0)
         {
             VAR(   local_rows+1, 0   ) = sign*VAR(   local_rows-1, 2   );
         }
     }
 
     // right edge
-    if (coords[0] == dims[0]-1)
+    if (coords[1] == dims[1]-1)
     {
         for ( int_t y=1; y<=local_rows; y++ ) VAR(   y, local_cols+1 ) = sign*VAR(   y, local_cols-1 );
 
         // lower right corner
         // n x m
-        if (coords[1] == dims[1]-1)
+        if (coords[0] == dims[0]-1)
         {
             VAR(   0, local_cols+1   ) = sign*VAR(   2, local_cols-1   );
         }
 
         // upper right corner
         // n x 0
-        if (coords[1] == 0)
+        if (coords[0] == 0)
         {
             VAR(   local_rows+1, local_cols+1   ) = sign*VAR(   local_rows-1, local_cols-1   );
         }
     }
 
     // upper edge
-    if (coords[1] == 0)
+    if (coords[0] == 0)
     {
         for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
     }
 
     // lower edge
-    if (coords[1] == dims[1]-1)
+    if (coords[0] == dims[0]-1)
     {
         for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
     }
@@ -364,8 +365,8 @@ create_types ( void )
     MPI_Comm_rank ( cart, &cart_rank );
     MPI_Cart_coords ( cart, cart_rank, 2, cart_offset);
 
-    MPI_Type_create_subarray ( 2, (int[2]) { local_rows+2, local_cols+2 }, (int[2]) { local_rows, local_cols }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
-    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_rows, local_cols }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
+    MPI_Type_create_subarray ( 2, (int[2]) { local_cols+2, local_rows+2 }, (int[2]) { local_cols,local_rows }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
+    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_cols, local_rows }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
     MPI_Type_commit ( &subgrid );
     MPI_Type_commit ( &grid ) ;
 
@@ -406,10 +407,10 @@ domain_init ()
     local_rows  = N;
     local_cols  = N;
 
-    int spare_rows = N%dims[1];
-    int spare_cols = N%dims[0];
-    int temp_local_rows = N/dims[1];
-    int temp_local_cols = N/dims[0];
+    int spare_rows = N%dims[0];
+    int spare_cols = N%dims[1];
+    int temp_local_rows = N/dims[0];
+    int temp_local_cols = N/dims[1];
 
     // Local dimension i have at most 1 element more than N/dims[i], but the last process will have less elements.
     if (spare_rows == 0)
@@ -417,14 +418,14 @@ domain_init ()
         local_rows  = temp_local_rows;
         local_rows_standard = temp_local_rows;
     }
-    else if (coords[1] < dims[1]-1)
+    else if (coords[0] < dims[0]-1)
     {
         local_rows  = temp_local_rows + 1;
         local_rows_standard= temp_local_rows + 1;
     }
     else 
     {
-        local_rows = N/dims[1] - (dims[1]-1)+spare_rows;
+        local_rows = N/dims[0] - (dims[0]-1)+spare_rows;
         local_rows_standard = temp_local_cols + 1;
     }
 
@@ -434,18 +435,18 @@ domain_init ()
         local_cols  = temp_local_cols;
         local_cols_standard = temp_local_cols;
     }
-    else if (coords[0] < dims[0]-1)
+    else if (coords[1] < dims[1]-1)
     {
         local_cols  = temp_local_cols + 1;
         local_cols_standard= temp_local_cols + 1;
     }
     else 
     {
-        local_cols = N/dims[0] - (dims[0]-1)+spare_cols;
+        local_cols = N/dims[1] - (dims[1]-1)+spare_cols;
         local_cols_standard = temp_local_cols + 1;
     }
 
-    printf("Rank: %i. \n Coords, x: %i, y: %i.\n Rows : %i, Cols: %i \n ------ \n",rank,coords[0],coords[1],local_rows,local_cols);
+    printf("Rank: %i. \n Coords, y: %i, x: %i.\n Rows : %i, Cols: %i \n ------ \n",rank,coords[0],coords[1],local_rows,local_cols);
     int_t local_size = (local_rows + 2) * (local_cols + 2);
 
     mass[0] = calloc ( local_size, sizeof(real_t) );
@@ -466,8 +467,8 @@ domain_init ()
 
     // TODO 2 Find the local x and y offsets for each process' subgrid
     // Hint: you can get useful information from the cartesian communicator
-    int_t local_x_offset = (coords[0])*local_cols_standard;
-    int_t local_y_offset = (dims[1]-coords[1])*local_rows_standard;
+    int_t local_x_offset = (coords[1])*local_cols_standard;
+    int_t local_y_offset = (dims[0]-coords[0])*local_rows_standard;
 
     for ( int_t y=1; y<=local_rows; y++ )
     {
