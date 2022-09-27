@@ -12,8 +12,6 @@
 
 #define WALLTIME(t) ((double)(t).tv_sec + 1e-6 * (double)(t).tv_usec)
 
-enum DIRECTIONS {DOWN, UP, LEFT, RIGHT};
-
 MPI_Comm
     cart;
 MPI_Datatype
@@ -23,12 +21,8 @@ MPI_Datatype
 int
     rank,
     comm_size,
-    coords[2],
-    dims[2] = {0,0},
     local_rows,
-    local_cols,
-    local_rows_standard,
-    local_cols_standard;
+    local_cols;
 
 #define MPI_RANK_ROOT  ( rank == 0 )
 
@@ -63,13 +57,25 @@ real_t
     dx,
     dt;
 
-// MPI Dataype
+// New variables and enumerations
+
+int 
+    neighbour_ranks[4],
+    coords[2],
+    dims[2] = {0,0},
+    local_rows_standard,
+    local_cols_standard;
 
 MPI_Datatype 
-    dim_1_triple,
-    dim_1_single,
-    dim_0_triple,
-    dim_0_single;
+    column_triple,
+    row_triple,
+    column_vector,
+    row_vector;
+
+enum DIRECTIONS {DOWN, UP, LEFT, RIGHT};
+
+
+// ------
 
 #define PN(y,x)         mass[0][(y)*(local_cols+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(local_cols+2)+(x)]
@@ -90,9 +96,17 @@ void domain_init ();
 void domain_save ( int_t iteration );
 void domain_finalize ( void );
 
+
 // new functions
 void border_exchange( void );
+void border_exchange_wack( void );
 
+void sendrecv_down(real_t* domain_variable);
+void sendrecv_up(real_t* domain_variable);
+void sendrecv_left(real_t* domain_variable);
+void sendrecv_right(real_t* domain_variable);
+
+// ----
 
 void
 swap ( real_t** t1, real_t** t2 )
@@ -108,7 +122,6 @@ int
 main ( int argc, char **argv )
 {
     MPI_Init ( &argc, &argv );
-
     // TODO 1 Create a communicator with cartesian topology
     MPI_Comm_size ( MPI_COMM_WORLD, &comm_size );
     MPI_Comm_rank ( MPI_COMM_WORLD, &rank );
@@ -148,6 +161,10 @@ main ( int argc, char **argv )
     MPI_Comm_rank(cart,&rank);
     MPI_Cart_coords(cart,rank,2,coords);
 
+    MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
+    MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[DOWN], &neighbour_ranks[UP]);
+
+
     // TODO 2 Find the number of columns and rows of each subgrid
     //        and find the local x and y offsets for each process' subgrid
     // Uncomment domain_save() and create_types() after TODO2 is complete
@@ -161,9 +178,10 @@ main ( int argc, char **argv )
     {
         // TODO 5 Implement border exchange
 
-        //border_exchange();
+        border_exchange();
 
         // TODO 4 Change application of boundary condition to match cartesian topology
+
         boundary_condition ( mass[0], 1 );
         boundary_condition ( mass_velocity_x[0], -1 );
         boundary_condition ( mass_velocity_y[0], -1 );
@@ -182,15 +200,17 @@ main ( int argc, char **argv )
                     100.0 * (real_t) iteration / (real_t) max_iteration
                 );
             }
-
+            //test_values();
             domain_save ( iteration );
         }
-
+        
         swap ( &mass[0], &mass[1] );
         swap ( &mass_velocity_x[0], &mass_velocity_x[1] );
         swap ( &mass_velocity_y[0], &mass_velocity_y[1] );
+         
     }
-
+       
+   
     domain_finalize();
 
     gettimeofday ( &t_stop, NULL );
@@ -204,58 +224,251 @@ main ( int argc, char **argv )
     exit ( EXIT_SUCCESS );
 }
 
+void
+test_values (void)
+{
+    for (int_t x = 1; x <= local_cols;x++)
+    {
+        for (int_t y = 1; y <= local_rows;y++)
+        {
+            PN(y,x) = rank*0.25 + ((y)*(local_cols)+(x))/(local_cols*local_rows)*0.25;
+        }
+    }
+}
+
+/*
+void 
+border_exchange( void)
+{
+
+    if(coords[0]%2 == 0)
+    {   
+
+        // DOWN
+        MPI_Send(&PN(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 0, cart);
+        MPI_Recv(&PN(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+
+        MPI_Send(&PNU(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 1, cart);
+        MPI_Recv(&PNU(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 1, cart, MPI_STATUS_IGNORE);
+
+        MPI_Ssend(&PNV(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 2, cart);
+        MPI_Recv(&PNV(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 2, cart, MPI_STATUS_IGNORE);
+
+        //UP
+
+        MPI_Send(&PN(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 3, cart);
+        MPI_Recv(&PN(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 3, cart, MPI_STATUS_IGNORE);
+
+        MPI_Send(&PNU(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 4, cart);
+        MPI_Recv(&PNU(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 4, cart, MPI_STATUS_IGNORE);
+
+        MPI_Send(&PNV(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 5, cart);
+        MPI_Recv(&PNV(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 5, cart, MPI_STATUS_IGNORE);
+       
+        
+    }
+
+    else
+    {   
+        //DOWN
+        MPI_Recv(&PN(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PN(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 0, cart);
+
+        MPI_Recv(&PNU(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 1, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PNU(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 1, cart);
+
+        MPI_Recv(&PNV(local_rows+1,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 2, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PNV(1,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 2, cart);
+
+        //UP
+
+        MPI_Recv(&PN(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 3, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PN(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 3, cart);
+        
+        MPI_Recv(&PNU(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 4, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PNU(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 4, cart);
+
+        MPI_Recv(&PNV(0,1), local_cols, MPI_DOUBLE, neighbour_ranks[DOWN], 5, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PNV(local_rows,1), local_cols, MPI_DOUBLE, neighbour_ranks[UP], 5, cart);
+    }
+
+
+    // -------------------
+
+    if(coords[1]%2 == 0)
+    {
+        // RIGHT
+        MPI_Send(&PN(1,local_cols), 1, column_vector, neighbour_ranks[RIGHT], 0, cart);
+        MPI_Recv(&PN(1,0), 1, column_vector, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
+        
+        MPI_Send(&PNU(1,local_cols), 1, column_vector, neighbour_ranks[RIGHT], 1, cart);
+        MPI_Recv(&PNU(1,0), 1, column_vector, neighbour_ranks[LEFT], 1, cart, MPI_STATUS_IGNORE);
+
+        MPI_Send(&PNV(1,local_cols), 1, column_vector, neighbour_ranks[RIGHT], 2, cart);
+        MPI_Recv(&PNV(1,0), 1, column_vector, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
+
+        //LEFT
+
+        MPI_Send(&PN(1,1), 1, column_vector, neighbour_ranks[LEFT], 3, cart);
+        MPI_Recv(&PN(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
+        
+        MPI_Send(&PNU(1,1), 1, column_vector, neighbour_ranks[LEFT], 4, cart);
+        MPI_Recv(&PNU(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 4, cart, MPI_STATUS_IGNORE);
+
+        MPI_Send(&PNV(1,1), 1, column_vector, neighbour_ranks[LEFT], 5, cart);
+        MPI_Recv(&PNV(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 5, cart, MPI_STATUS_IGNORE);
+       
+        
+    }
+
+    else
+    {
+        // RIGHT
+        MPI_Recv(&PN(1,0), 1, column_vector, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PN(1,local_cols), local_rows, column_vector, neighbour_ranks[RIGHT], 0, cart);
+        
+        MPI_Recv(&PNU(1,0), 1, column_vector, neighbour_ranks[LEFT], 1, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PNU(1,local_cols), local_rows, column_vector, neighbour_ranks[RIGHT], 1, cart);
+        
+        MPI_Recv(&PNV(1,0), 1, column_vector, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PNV(1,local_cols), local_rows, column_vector, neighbour_ranks[RIGHT], 2, cart);
+
+        //LEFT
+
+        MPI_Recv(&PN(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PN(1,1), 1, column_vector, neighbour_ranks[LEFT], 3, cart);
+        
+        MPI_Recv(&PNU(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 4, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PNU(1,1), 1, column_vector, neighbour_ranks[LEFT], 4, cart);
+        
+        MPI_Recv(&PNV(1,local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 5, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PNV(1,1), 1, column_vector, neighbour_ranks[LEFT], 5, cart);
+    }
+}
+*/
+
 void 
 border_exchange( void )
 {
     
+    sendrecv_down(mass[0]);
+    sendrecv_up(mass[0]);
+    sendrecv_left(mass[0]);
+    sendrecv_right(mass[0]);
 
-    int neighbour_ranks[4];
-    MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
-    MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[UP], &neighbour_ranks[DOWN]);
+    sendrecv_down(mass_velocity_x[0]);
+    sendrecv_up(mass_velocity_x[0]);
+    sendrecv_left(mass_velocity_x[0]);
+    sendrecv_right(mass_velocity_x[0]);
+
+    sendrecv_down(mass_velocity_y[0]);    
+    sendrecv_up(mass_velocity_y[0]);  
+    sendrecv_left(mass_velocity_y[0]);
+    sendrecv_right(mass_velocity_y[0]);
+
+}
+
+
+void sendrecv_down(real_t* domain_variable)
+{   
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, 1), 1, row_vector, neighbour_ranks[DOWN], 0, 
+                    &VAR(local_rows+1, 1), 1, row_vector, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_up(real_t* domain_variable)
+{   
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(local_rows, 1), 1, row_vector, neighbour_ranks[UP], 0, 
+                    &VAR(0, 1), 1, row_vector, neighbour_ranks[DOWN], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_left(real_t* domain_variable)
+{   
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, 1), 1, column_vector, neighbour_ranks[LEFT], 0, 
+                    &VAR(1, local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_right(real_t* domain_variable)
+{   
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, local_cols), 1, column_vector, neighbour_ranks[RIGHT], 0, 
+                    &VAR(1, 0), 1, column_vector, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+
+void 
+border_exchange_wack( void )
+{
     
-
-    printf("Rank %i, UP: %i, Down %i Left: %i, Right %i \n", rank, neighbour_ranks[UP], neighbour_ranks[DOWN], neighbour_ranks[LEFT], neighbour_ranks[RIGHT]);
-
     if(coords[0]%2 == 0)
-    {
-        // Send "down"
-        MPI_Ssend( &PN(1,1), 1, dim_1_triple, neighbour_ranks[DOWN], 0, cart);
-        MPI_Recv( &PN(local_rows+ 1, 1), 1 , dim_1_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+    {   
 
-        // Send "up"
-        MPI_Ssend( &PN(local_rows,1), 1, dim_1_triple, neighbour_ranks[UP], 1, cart);
-        MPI_Recv( &PN(0,1), 1, dim_1_triple, neighbour_ranks[DOWN], 1, cart, MPI_STATUS_IGNORE);
+        // DOWN
 
+        MPI_Ssend(&PN(1,1), 1, row_triple, neighbour_ranks[DOWN], 0, cart);
+        MPI_Recv(&PN(local_rows+1,1), 1, row_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+
+        //UP
+
+        MPI_Send(&PN(local_rows,1), 1, row_triple, neighbour_ranks[UP], 3, cart);
+        MPI_Recv(&PN(0,1), 1, row_triple, neighbour_ranks[DOWN], 3, cart, MPI_STATUS_IGNORE);
+       
+        
     }
 
     else
-    {
-        // Send "down"
-        MPI_Recv( &PN(local_rows+ 1, 1), 1 , dim_1_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
-        MPI_Ssend( &PN(1,1), 1, dim_1_triple, neighbour_ranks[DOWN], 0, cart);
-        
-        // Send "up"
-        MPI_Recv( &PN(0,1), 1, dim_1_triple, neighbour_ranks[DOWN], 1, cart, MPI_STATUS_IGNORE);
-        MPI_Ssend( &PN(local_rows,1), 1, dim_1_triple, neighbour_ranks[UP], 1, cart);
+    {   
+        //DOWN
+        MPI_Recv(&PN(local_rows+1,1), 1, row_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PN(1,1), 1, row_triple, neighbour_ranks[DOWN], 0, cart);
+
+        //UP
+
+        MPI_Recv(&PN(0,1), 1, row_triple, neighbour_ranks[DOWN], 3, cart, MPI_STATUS_IGNORE);
+        MPI_Ssend(&PN(local_rows,1), 1, row_triple, neighbour_ranks[UP], 3, cart);
     }
+
+
+    // -------------------
+
     if(coords[1]%2 == 0)
     {
-        MPI_Ssend( &PN(1,local_cols), 1, dim_0_triple, neighbour_ranks[RIGHT], 2, cart);
-        MPI_Recv( &PN(1,0), 1, dim_0_triple, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
+        // RIGHT
+        MPI_Send(&PN(1,local_cols), 1, column_triple, neighbour_ranks[RIGHT], 0, cart);
+        MPI_Recv(&PN(1,0), 1, column_triple, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
 
-        // Send left
-        MPI_Ssend( &PN(1,1), 1, dim_0_triple, neighbour_ranks[LEFT], 3, cart);
-        MPI_Recv( &PN(1,local_cols+1), 1, dim_0_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
+        //LEFT
+
+        MPI_Send(&PN(1,1), 1, column_triple, neighbour_ranks[LEFT], 3, cart);
+        MPI_Recv(&PN(1,local_cols+1), 1, column_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);      
+        
     }
+
     else
     {
-        MPI_Recv( &PN(1,0), 1, dim_0_triple, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
-        MPI_Ssend( &PN(1,local_cols), 1, dim_0_triple, neighbour_ranks[RIGHT], 2, cart);
-        
-        // Send left
-        MPI_Recv( &PN(1,local_cols+1), 1, dim_0_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
-        MPI_Ssend( &PN(1,1), 1, dim_0_triple, neighbour_ranks[LEFT], 3, cart);
-        }
+        // RIGHT
+        MPI_Recv(&PN(1,0), 1, column_triple, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PN(1,local_cols), local_rows, column_vector, neighbour_ranks[RIGHT], 0, cart);
+
+        //LEFT
+
+        MPI_Recv(&PN(1,local_cols+1), 1, column_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
+        MPI_Send(&PN(1,1), 1, column_triple, neighbour_ranks[LEFT], 3, cart);
+    }
 
 }
 
@@ -323,6 +536,18 @@ boundary_condition ( real_t *domain_variable, int sign )
 
     // in n x m process grid
 
+    // upper edge
+    if (coords[0] == dims[0]-1)
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
+    }
+
+    // lower edge
+    if (coords[0] == 0 )
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
+    }
+
     // left edge
     if (coords[1] == 0)
     {
@@ -363,18 +588,6 @@ boundary_condition ( real_t *domain_variable, int sign )
         }
     }
 
-    // upper edge
-    if (coords[0] == 0)
-    {
-        for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
-    }
-
-    // lower edge
-    if (coords[0] == dims[0]-1)
-    {
-        for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
-    }
-
     #undef VAR
 }
 
@@ -386,21 +599,23 @@ create_types ( void )
     MPI_Comm_rank ( cart, &cart_rank );
     MPI_Cart_coords ( cart, cart_rank, 2, cart_offset);
 
-    MPI_Type_create_subarray ( 2, (int[2]) { local_cols+2, local_rows+2 }, (int[2]) { local_cols,local_rows }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
-    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_cols, local_rows }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
+    MPI_Type_create_subarray ( 2, (int[2]) { local_rows+2, local_cols+2 }, (int[2]) { local_rows, local_cols }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
+    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_rows, local_cols }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
     MPI_Type_commit ( &subgrid );
     MPI_Type_commit ( &grid ) ;
 
+
+
     // added types
-
-    MPI_Type_vector( 1, local_cols, 0, MPI_DOUBLE, &dim_1_single);
-    MPI_Type_vector( local_rows, 1, local_cols+2, MPI_DOUBLE, &dim_0_single);
-
-    MPI_Type_commit( &dim_1_single);
-    MPI_Type_commit( &dim_0_single);
+    MPI_Type_vector( 1, local_cols, 0, MPI_DOUBLE, &row_vector );
+    MPI_Type_commit( &row_vector);
+    MPI_Type_vector( local_rows, 1, local_cols+2, MPI_DOUBLE, &column_vector);
+    MPI_Type_commit( &column_vector);
+    
 
     
-    int lengths[3] = {1,1,1};
+    int row_triple_lengths[3] = {local_cols,local_cols,local_cols};
+    int column_triple_lengths[3] = {1,1,1};
 
     MPI_Aint disp[3];
 
@@ -412,11 +627,11 @@ create_types ( void )
     disp[1] = disp[1] - disp[0];
     disp[0] = 0;
 
-    MPI_Type_create_hindexed( 3, lengths, disp, dim_1_single, &dim_1_triple);
-    MPI_Type_create_hindexed( 3, lengths, disp, dim_0_single, &dim_0_triple );
+    MPI_Type_create_hindexed( 3, row_triple_lengths, disp, MPI_DOUBLE, &row_triple);
+    MPI_Type_create_hindexed( 3, column_triple_lengths, disp, column_vector, &column_triple );
 
-    MPI_Type_commit(&dim_1_triple);
-    MPI_Type_commit(&dim_0_triple);
+    MPI_Type_commit(&row_triple);
+    MPI_Type_commit(&column_triple);
 }
 
 
@@ -489,7 +704,7 @@ domain_init ()
     // TODO 2 Find the local x and y offsets for each process' subgrid
     // Hint: you can get useful information from the cartesian communicator
     int_t local_x_offset = (coords[1])*local_cols_standard;
-    int_t local_y_offset = (dims[0]-coords[0])*local_rows_standard;
+    int_t local_y_offset = (coords[0])*local_rows_standard;
 
     for ( int_t y=1; y<=local_rows; y++ )
     {
@@ -509,7 +724,6 @@ domain_init ()
                     - 4*pow( cy, 2.0 ) / (real_t)(N)
                 );
             }
-
             PN(y,x) *= density;
         }
     }
