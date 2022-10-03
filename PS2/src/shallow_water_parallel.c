@@ -12,8 +12,7 @@
 
 #define WALLTIME(t) ((double)(t).tv_sec + 1e-6 * (double)(t).tv_usec)
 
-enum DIRECTIONS {DOWN, UP, LEFT, RIGHT};
-
+// the cartesian communicator
 MPI_Comm
     cart;
 MPI_Datatype
@@ -23,12 +22,8 @@ MPI_Datatype
 int
     rank,
     comm_size,
-    coords[2],
-    dims[2] = {0,0},
     local_rows,
-    local_cols,
-    local_rows_standard,
-    local_cols_standard;
+    local_cols;
 
 #define MPI_RANK_ROOT  ( rank == 0 )
 
@@ -63,13 +58,23 @@ real_t
     dx,
     dt;
 
-// MPI Dataype
+// New variables and enumerations
+
+int 
+    neighbour_ranks[4],
+    coords[2],
+    dims[2] = {0,0},
+    local_rows_standard,
+    local_cols_standard;
 
 MPI_Datatype 
-    dim_1_triple,
-    dim_1_single,
-    dim_0_triple,
-    dim_0_single;
+    column_vector,
+    row_vector;
+
+enum DIRECTIONS {DOWN, UP, LEFT, RIGHT};
+
+
+// ------
 
 #define PN(y,x)         mass[0][(y)*(local_cols+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(local_cols+2)+(x)]
@@ -90,9 +95,16 @@ void domain_init ();
 void domain_save ( int_t iteration );
 void domain_finalize ( void );
 
+
 // new functions
 void border_exchange( void );
 
+void sendrecv_down(real_t* domain_variable);
+void sendrecv_up(real_t* domain_variable);
+void sendrecv_left(real_t* domain_variable);
+void sendrecv_right(real_t* domain_variable);
+
+// ----
 
 void
 swap ( real_t** t1, real_t** t2 )
@@ -108,7 +120,6 @@ int
 main ( int argc, char **argv )
 {
     MPI_Init ( &argc, &argv );
-
     // TODO 1 Create a communicator with cartesian topology
     MPI_Comm_size ( MPI_COMM_WORLD, &comm_size );
     MPI_Comm_rank ( MPI_COMM_WORLD, &rank );
@@ -141,12 +152,22 @@ main ( int argc, char **argv )
         }
     }
 
+    // Non-periodic topology.
     int periods[2] = {0,0};
+    // Reorder the processes based on the cartesian topology
     int reorder = 1;
 
+    // Creates the cartesian communcatior with the 
     MPI_Cart_create(MPI_COMM_WORLD,2,dims,periods,reorder, &cart);
+
+    // gets the new rank from the communicator
     MPI_Comm_rank(cart,&rank);
     MPI_Cart_coords(cart,rank,2,coords);
+    
+    // Gets the rank of the neighbouring processes in the topology
+    MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
+    MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[DOWN], &neighbour_ranks[UP]);
+
 
     // TODO 2 Find the number of columns and rows of each subgrid
     //        and find the local x and y offsets for each process' subgrid
@@ -164,6 +185,7 @@ main ( int argc, char **argv )
         border_exchange();
 
         // TODO 4 Change application of boundary condition to match cartesian topology
+
         boundary_condition ( mass[0], 1 );
         boundary_condition ( mass_velocity_x[0], -1 );
         boundary_condition ( mass_velocity_y[0], -1 );
@@ -182,15 +204,17 @@ main ( int argc, char **argv )
                     100.0 * (real_t) iteration / (real_t) max_iteration
                 );
             }
-
+            //test_values();
             domain_save ( iteration );
         }
-
+        
         swap ( &mass[0], &mass[1] );
         swap ( &mass_velocity_x[0], &mass_velocity_x[1] );
         swap ( &mass_velocity_y[0], &mass_velocity_y[1] );
+         
     }
-
+       
+   
     domain_finalize();
 
     gettimeofday ( &t_stop, NULL );
@@ -203,40 +227,72 @@ main ( int argc, char **argv )
 
     exit ( EXIT_SUCCESS );
 }
-
 void 
 border_exchange( void )
 {
-    
+    // Send and recieve procedures for the differnet variables needed at the boundary.
+    sendrecv_down(mass[0]);
+    sendrecv_up(mass[0]);
+    sendrecv_left(mass[0]);
+    sendrecv_right(mass[0]);
 
-    int neighbour_ranks[4];
-    MPI_Cart_shift( cart, 0, 1, &neighbour_ranks[LEFT], &neighbour_ranks[RIGHT]);
-    MPI_Cart_shift( cart, 1, 1, &neighbour_ranks[UP], &neighbour_ranks[DOWN]);
+    sendrecv_down(mass_velocity_x[0]);
+    sendrecv_up(mass_velocity_x[0]);
+    sendrecv_left(mass_velocity_x[0]);
+    sendrecv_right(mass_velocity_x[0]);
 
-    /*
-    if(coords[0]%2 == 0)
-    {
-        // Send "down"
-        MPI_Ssend( &PN(1,1), 1, dim_1_triple, neighbour_ranks[DOWN], 0, cart);
-        MPI_Recv( &PN(local_rows+ 1, 1), 1 , dim_1_triple, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+    sendrecv_down(mass_velocity_y[0]);    
+    sendrecv_up(mass_velocity_y[0]);  
+    sendrecv_left(mass_velocity_y[0]);
+    sendrecv_right(mass_velocity_y[0]);
 
-        // Send "up"
-        MPI_Ssend( &PN(local_rows,1), 1, dim_1_triple, neighbour_ranks[UP], 1, cart);
-        MPI_Recv( &PN(0,1), 1, dim_1_triple, neighbour_ranks[DOWN], 1, cart, MPI_STATUS_IGNORE);
-
-    }
-
-    if(coords[0]%2 == 0)
-    {
-        MPI_Ssend( &PN(1,local_cols), 1, dim_0_triple, neighbour_ranks[RIGHT], 2, cart);
-        MPI_Recv( &PN(1,0), 1, dim_0_triple, neighbour_ranks[LEFT], 2, cart, MPI_STATUS_IGNORE);
-
-        // Send left
-        MPI_Ssend( &PN(1,1), 1, dim_0_triple, neighbour_ranks[LEFT], 3, cart);
-        MPI_Recv( &PN(1,local_cols+1), 1, dim_0_triple, neighbour_ranks[RIGHT], 3, cart, MPI_STATUS_IGNORE);
-    }
-    */
 }
+
+
+void sendrecv_down(real_t* domain_variable)
+{   
+    // Sends and recieve variables down/ from up
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, 1), 1, row_vector, neighbour_ranks[DOWN], 0, 
+                    &VAR(local_rows+1, 1), 1, row_vector, neighbour_ranks[UP], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_up(real_t* domain_variable)
+{   
+    // Sends and recieve variables up/ from down
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(local_rows, 1), 1, row_vector, neighbour_ranks[UP], 0, 
+                    &VAR(0, 1), 1, row_vector, neighbour_ranks[DOWN], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_left(real_t* domain_variable)
+{      
+    // Sends and recieve variables left/ from right
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, 1), 1, column_vector, neighbour_ranks[LEFT], 0, 
+                    &VAR(1, local_cols+1), 1, column_vector, neighbour_ranks[RIGHT], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
+void sendrecv_right(real_t* domain_variable)
+{   
+    // Sends and recieve variables right/ from left
+    #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
+
+    MPI_Sendrecv(   &VAR(1, local_cols), 1, column_vector, neighbour_ranks[RIGHT], 0, 
+                    &VAR(1, 0), 1, column_vector, neighbour_ranks[LEFT], 0, cart, MPI_STATUS_IGNORE);
+
+    #undef VAR
+}
+
 
 
 void
@@ -300,7 +356,19 @@ boundary_condition ( real_t *domain_variable, int sign )
     // TODO 4 Change application of boundary condition to match cartesian topology
     #define VAR(y,x) domain_variable[(y)*(local_cols+2)+(x)]
 
-    // in n x m process grid
+    // in n x m process grid as in the slides from the lecture
+
+    // lower edge
+    if (coords[0] == dims[0]-1)
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
+    }
+
+    // upper edge
+    if (coords[0] == 0 )
+    {
+        for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
+    }
 
     // left edge
     if (coords[1] == 0)
@@ -342,18 +410,6 @@ boundary_condition ( real_t *domain_variable, int sign )
         }
     }
 
-    // upper edge
-    if (coords[0] == 0)
-    {
-        for ( int_t x=1; x<=local_cols; x++ ) VAR( local_rows+1, x   ) = sign*VAR( local_rows-1, x   );
-    }
-
-    // lower edge
-    if (coords[0] == dims[0]-1)
-    {
-        for ( int_t x=1; x<=local_cols; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
-    }
-
     #undef VAR
 }
 
@@ -365,37 +421,22 @@ create_types ( void )
     MPI_Comm_rank ( cart, &cart_rank );
     MPI_Cart_coords ( cart, cart_rank, 2, cart_offset);
 
-    MPI_Type_create_subarray ( 2, (int[2]) { local_cols+2, local_rows+2 }, (int[2]) { local_cols,local_rows }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
-    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_cols, local_rows }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
+    MPI_Type_create_subarray ( 2, (int[2]) { local_rows+2, local_cols+2 }, (int[2]) { local_rows, local_cols }, (int[2]) {1,1}, MPI_ORDER_C, MPI_DOUBLE, &subgrid );
+    MPI_Type_create_subarray ( 2, (int[2]) {N, N} , (int[2]) { local_rows, local_cols }, (int[2]) { cart_offset[0] * local_rows, cart_offset[1] * local_cols}, MPI_ORDER_C, MPI_DOUBLE, &grid );
     MPI_Type_commit ( &subgrid );
     MPI_Type_commit ( &grid ) ;
 
+
+
     // added types
-
-    MPI_Type_vector( 1, local_cols, 0, MPI_DOUBLE, &dim_1_single);
-    MPI_Type_vector( local_rows, 1, local_cols+2, MPI_DOUBLE, &dim_0_single);
-
-    MPI_Type_commit( &dim_1_single);
-    MPI_Type_commit( &dim_0_single);
-
+    // row vector, equivalent to contious MPI_double.
     
-    int lengths[3] = {1,1,1};
+    MPI_Type_vector( 1, local_cols, 0, MPI_DOUBLE, &row_vector );
+    MPI_Type_commit( &row_vector);
 
-    MPI_Aint disp[3];
-
-    MPI_Get_address( &mass[0][0] , &disp[0]);
-    MPI_Get_address( &mass_velocity_x[0][0] , &disp[1]);
-    MPI_Get_address( &mass_velocity_y[0][0] , &disp[2]);
-
-    disp[2] = disp[2] - disp[1];
-    disp[1] = disp[1] - disp[0];
-    disp[0] = 0;
-
-    MPI_Type_create_hindexed( 3, lengths, disp, dim_1_single, &dim_1_triple);
-    MPI_Type_create_hindexed( 3, lengths, disp, dim_0_single, &dim_0_triple );
-
-    MPI_Type_commit(&dim_1_triple);
-    MPI_Type_commit(&dim_0_triple);
+    // column vector passes columns of the arrays mass, mass_velocity etc.
+    MPI_Type_vector( local_rows, 1, local_cols+2, MPI_DOUBLE, &column_vector);
+    MPI_Type_commit( &column_vector);
 }
 
 
@@ -418,6 +459,8 @@ domain_init ()
         local_rows  = temp_local_rows;
         local_rows_standard = temp_local_rows;
     }
+
+    // Only needed in case of non even N to processes.
     else if (coords[0] < dims[0]-1)
     {
         local_rows  = temp_local_rows + 1;
@@ -435,6 +478,8 @@ domain_init ()
         local_cols  = temp_local_cols;
         local_cols_standard = temp_local_cols;
     }
+
+    // Only needed in case of non even N to processes.
     else if (coords[1] < dims[1]-1)
     {
         local_cols  = temp_local_cols + 1;
@@ -468,7 +513,7 @@ domain_init ()
     // TODO 2 Find the local x and y offsets for each process' subgrid
     // Hint: you can get useful information from the cartesian communicator
     int_t local_x_offset = (coords[1])*local_cols_standard;
-    int_t local_y_offset = (dims[0]-coords[0])*local_rows_standard;
+    int_t local_y_offset = (coords[0])*local_rows_standard;
 
     for ( int_t y=1; y<=local_rows; y++ )
     {
@@ -488,7 +533,6 @@ domain_init ()
                     - 4*pow( cy, 2.0 ) / (real_t)(N)
                 );
             }
-
             PN(y,x) *= density;
         }
     }

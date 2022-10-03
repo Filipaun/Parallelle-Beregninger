@@ -7,9 +7,11 @@ SERIAL_SRC_FILES:=src/shallow_water_serial.c src/argument_utils.c
 
 PARALLEL_SRC_FILES:=src/shallow_water_parallel.c src/argument_utils.c
 
+TEST_SRC_FILES:=src/tester.c
+
 INC_PATHS:=-Iinc/
 
-.PHONY: clean purge setup run check plot show run_serial run_parallel check_serial check_parallel plot_serial plot_parallel show_serial show_parallel viz
+.PHONY: clean purge setup run check plot show run_serial run_parallel check_serial check_parallel plot_serial plot_parallel show_serial show_parallel viz run_test
 
 parallel: $(PARALLEL_SRC_FILES)
 	$(PARALLEL_CC) $^ $(CFLAGS) $(LDLIBS) -o $@
@@ -17,11 +19,16 @@ parallel: $(PARALLEL_SRC_FILES)
 serial: $(SERIAL_SRC_FILES)
 	$(CC) $^ $(CFLAGS) $(LDLIBS) -o $@
 
+test: $(TEST_SRC_FILES)
+	$(PARALLEL_CC) $^ $(CLFAGS) $(LDLIBS) -o $@
+
 run: run_parallel
 check: check_parallel
 plot: plot_parallel
 show: show_parallel
 
+run_test: test
+	mpirun -np 2 --oversubscribe ./test
 clean:
 	-rm -f serial parallel
 
@@ -37,7 +44,7 @@ run_serial: purge serial
 	./serial
 
 run_parallel: purge parallel
-	mpirun -np 4 ./parallel
+	mpirun -np 2 --oversubscribe ./parallel
 
 check_serial: purge serial
 	./check/check_serial_solution.sh
@@ -50,7 +57,6 @@ plot_serial: purge run_serial
 
 plot_parallel: purge run_parallel
 	./plot_solution.sh
-
 show_serial: purge run_serial viz
 show_parallel: purge run_parallel viz
 

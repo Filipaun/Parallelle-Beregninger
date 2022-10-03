@@ -54,3 +54,14 @@ dkms.conf
 
 # Data files
 *.bin
+
+# generated folders
+PS1/data 
+PS1/video
+PS1/plots
+PS2/data 
+PS2/video
+PS2/plots
+PS3/data 
+PS3/video
+PS3/plots

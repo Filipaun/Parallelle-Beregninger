@@ -46,10 +46,13 @@ OUTFILE=`echo $FILE | sed s/^data/plots/ |  sed s/\.bin/.png/`
 cat <<END_OF_SCRIPT | gnuplot -
 set term png
 set output "$OUTFILE"
-set zrange [0.9:1.1]
-set cbrange [0.95:1.0]
+set zrange [0.0:1.1]
+set cbrange [0.0:1.0]
 set palette defined (0 "grey", 1 "blue", 2 "white")
 splot "$FILE" binary array=${SIZE}x${SIZE} format='%double' with pm3d
 END_OF_SCRIPT
 echo $OUTFILE
 done
+
+# set zrange [0.9:1.1]
+# set cbrange [0.95:1.0]
