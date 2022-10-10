@@ -43,6 +43,11 @@ real_t
     dx,
     dt;
 
+// number of threads
+int thread_count = 2;
+int flag = 0;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
 #define PNU(y,x)        mass_velocity_x[0][(y)*(N+2)+(x)]
@@ -61,6 +66,13 @@ void domain_init ( void );
 void domain_save ( int_t iteration );
 void domain_finalize ( void );
 
+// functions for pthread
+void *pthread_fat_step_func( void * rank);
+void pthread_boundary_condition ( real_t *domain_variable, int sign, long rank, int_t * domain );
+void pthread_time_step( long rank, int_t* domain);
+void get_domain( long rank, int_t* domain);
+
+
 
 void
 swap ( real_t** t1, real_t** t2 )
@@ -76,6 +88,11 @@ int
 main ( int argc, char **argv )
 {
 
+    long thread_id;
+    pthread_t* thread_handles;
+
+    thread_handles = malloc( thread_count * sizeof(pthread_t));
+
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
     {
@@ -86,6 +103,8 @@ main ( int argc, char **argv )
     N = options->N;
     max_iteration = options->max_iteration;
     snapshot_frequency = options->snapshot_frequency;
+    int err_create;
+    int err_join;
 
     domain_init();
 
@@ -93,11 +112,25 @@ main ( int argc, char **argv )
 
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
-        boundary_condition ( mass[0], 1 );
-        boundary_condition ( mass_velocity_x[0], -1 );
-        boundary_condition ( mass_velocity_y[0], -1 );
+        flag = 0;
+        for ( thread_id = 0; thread_id < thread_count; thread_id ++)
+        {
+            err_create  = pthread_create(&thread_handles[thread_id], NULL, pthread_fat_step_func, (void*) thread_id);
+            if ( err_create != 0)
+            {
+                printf("errorcode : %d for id: %ld \n ", err_create, thread_id);
+            }
+            
+        }
 
-        time_step();
+        for (thread_id = 0; thread_id < thread_count; thread_id++)
+        {
+            err_join = pthread_join(thread_handles[thread_id], NULL);
+            if ( err_join != 0)
+            {
+                printf("errorjoin : %d for id: %ld \n ", err_join, thread_id);
+            }
+        }
 
         if ( iteration % snapshot_frequency == 0 )
         {
@@ -119,9 +152,163 @@ main ( int argc, char **argv )
     t_total = WALLTIME(t_stop) - WALLTIME(t_start);
     printf ( "%.2lf seconds total runtime\n", t_total );
 
+    free(thread_handles);
     domain_finalize();
 
     exit ( EXIT_SUCCESS );
+}
+
+// new function for timestep in thread
+
+void*
+pthread_fat_step_func( void * rank)
+{
+    int_t domain[2];
+    long my_rank = (long) rank;
+    get_domain(my_rank, domain);
+
+    pthread_boundary_condition(mass[0], 1, rank, domain);
+    pthread_boundary_condition(mass_velocity_x[0], -1, rank, domain);
+    pthread_boundary_condition(mass_velocity_y[0], -1, rank, domain);
+
+    pthread_time_step(rank, domain);
+}
+
+void 
+pthread_time_step ( long rank, int_t* domain )
+{
+    //printf("Hello time step %ld, a: %ld, b %ld \n", my_rank, domain[0], domain[1]);
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            U(y,x) = PNU(y,x) / PN(y,x);
+            V(y,x) = PNV(y,x) / PN(y,x);
+        }
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNUV(y,x) = PN(y,x) * U(y,x) * V(y,x);
+        }
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=0; x<=N+1; x++ )
+        {
+            DU(y,x) = PN(y,x) * U(y,x) * U(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+            DV(y,x) = PN(y,x) * V(y,x) * V(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+        }
+    if (domain[0] == 1)
+    {
+        int_t y = 0;
+        for ( int_t x=0; x<=N+1; x++ )
+        {
+            DU(y,x) = PN(y,x) * U(y,x) * U(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+            DV(y,x) = PN(y,x) * V(y,x) * V(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+        }
+    }
+    if (domain[1] == N)
+    {
+        int_t y = N+1;
+        for ( int_t x=0; x<=N+1; x++ )
+        {
+            DU(y,x) = PN(y,x) * U(y,x) * U(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+            DV(y,x) = PN(y,x) * V(y,x) * V(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+        }
+    }
+
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNU_next(y,x) = 0.5*( PNU(y,x+1) + PNU(y,x-1) ) - dt*(
+                            ( DU(y,x+1) - DU(y,x-1) ) / (2*dx)
+                          + ( PNUV(y,x+1) - PNUV(y,x-1) ) / (2*dx)
+            );
+        }
+    
+    pthread_mutex_lock(&mutex);
+    flag++;
+    pthread_mutex_unlock(&mutex);
+    //printf("flag : %d \n",flag);
+    while( flag < thread_count );
+
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNV_next(y,x) = 0.5*( PNV(y+1,x) + PNV(y-1,x) ) - dt*(
+                            ( DV(y+1,x) - DV(y-1,x) ) / (2*dx)
+                          + ( PNUV(y+1,x) - PNUV(y-1,x) ) / (2*dx)
+            );
+        }
+
+    for ( int_t y=domain[0]; y<=domain[1]; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PN_next(y,x) = 0.25*( PN(y,x+1) + PN(y,x-1) + PN(y+1,x) + PN(y-1,x) ) - dt*(
+                           ( PNU(y,x+1) - PNU(y,x-1) ) / (2*dx)
+                         + ( PNV(y+1,x) - PNV(y-1,x) ) / (2*dx)
+            );
+        }
+}
+
+void
+pthread_boundary_condition ( real_t *domain_variable, int sign, long rank, int_t * domain )
+{
+    #define VAR(y,x) domain_variable[(y)*(N+2)+(x)]
+    // if thread has bottom y slice
+    if (domain[0] == 1)
+    {
+        // lower corners
+        VAR(   0, 0   ) = sign*VAR(   2, 2   );
+        VAR(   0, N+1 ) = sign*VAR(   2, N-1 );
+
+        // y = 0
+        for ( int_t x=1; x<=N; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
+    }
+    // if thread has top y slice
+    if ( domain[1] == N)
+    {   
+        // upper corners
+        VAR( N+1, 0   ) = sign*VAR( N-1, 2   );
+        VAR( N+1, N+1 ) = sign*VAR( N-1, N-1 );
+
+        // y = N+1
+        for ( int_t x=1; x<=N; x++ ) VAR( N+1, x   ) = sign*VAR( N-1, x   );
+    }
+
+    // left and right boundary values
+    for ( int_t y=domain[0]; y<=domain[1]; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
+    for ( int_t y=domain[0]; y<=domain[1]; y++ ) VAR(   y, N+1 ) = sign*VAR(   y, N-1 );
+    
+    
+    #undef VAR
+}
+
+
+
+void
+get_domain( long rank, int_t* domain )
+{
+    // get domain of thread
+    if( rank == thread_count)
+    {
+        domain[0] = 1 + rank*(N/thread_count);
+        domain[1] = N;
+    }
+    else
+    {
+        domain[0] = 1 + rank*(N/thread_count);
+        domain[1] = (rank+1)*(N/thread_count);
+    }
+    
 }
 
 

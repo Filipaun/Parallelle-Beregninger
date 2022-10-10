@@ -13,6 +13,7 @@ INC_PATHS:=-Iinc/
 .PHONY: clean purge setup run check plot show run_serial run_parallel check_serial check_parallel plot_serial plot_parallel show_serial show_parallel viz
 
 pthreads: $(PTHREADS_SRC_FILES)
+	@echo "$(PARALLEL_CC) $^ $(CFLAGS) $(LDLIBS) -o $@"
 	$(PARALLEL_CC) $^ $(CFLAGS) $(LDLIBS) -o $@
 
 omp: $(OMP_SRC_FILES)
