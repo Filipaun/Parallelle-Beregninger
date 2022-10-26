@@ -44,9 +44,15 @@ real_t
     dt;
 
 // number of threads
-int thread_count = 2;
+int thread_count = 4;
+// different ways to solve the barrier for the critical parts.. (1,2,3,4)
+int barrier_option = 4;
+
 int flag = 0;
+int* flag_list;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_barrier_t barrier;
+
 
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
@@ -83,15 +89,35 @@ swap ( real_t** t1, real_t** t2 )
 	*t2 = tmp;
 }
 
+int
+clamp ( int my_var, int lower, int upper )
+{
+    if (my_var < lower )
+    {
+        return lower;
+    }
+    else if ( my_var > upper)
+    {
+        return upper;
+    }
+    else
+    {
+        return my_var;
+    }
+}
+
 
 int
 main ( int argc, char **argv )
 {
+    // allocate thread objects 
+    pthread_t* thread_handles  = malloc( thread_count * sizeof(pthread_t));
 
-    long thread_id;
-    pthread_t* thread_handles;
+    // allocate list of ints ( bools ) for barrier for barrier_option 2 and 3
+    flag_list = calloc(thread_count, sizeof(int));
 
-    thread_handles = malloc( thread_count * sizeof(pthread_t));
+    // initalize barrier pthread barrier object for barrier_option 4
+    int barrier_ret = pthread_barrier_init(&barrier, NULL, thread_count);
 
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
@@ -103,8 +129,6 @@ main ( int argc, char **argv )
     N = options->N;
     max_iteration = options->max_iteration;
     snapshot_frequency = options->snapshot_frequency;
-    int err_create;
-    int err_join;
 
     domain_init();
 
@@ -112,24 +136,38 @@ main ( int argc, char **argv )
 
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
-        flag = 0;
-        for ( thread_id = 0; thread_id < thread_count; thread_id ++)
+        for (long thread_id = 0; thread_id < thread_count; thread_id ++)
         {
-            err_create  = pthread_create(&thread_handles[thread_id], NULL, pthread_fat_step_func, (void*) thread_id);
-            if ( err_create != 0)
-            {
-                printf("errorcode : %d for id: %ld \n ", err_create, thread_id);
-            }
+            pthread_create(&thread_handles[thread_id], NULL, pthread_fat_step_func, (void*) thread_id);
             
         }
 
-        for (thread_id = 0; thread_id < thread_count; thread_id++)
+        for (long thread_id = 0; thread_id < thread_count; thread_id++)
         {
-            err_join = pthread_join(thread_handles[thread_id], NULL);
-            if ( err_join != 0)
-            {
-                printf("errorjoin : %d for id: %ld \n ", err_join, thread_id);
-            }
+            pthread_join(thread_handles[thread_id], NULL);
+
+        }
+
+        switch(barrier_option)
+        {
+            case 1:
+                flag = 0;
+                break;
+            
+            case 2:
+            case 3:
+                for (int temp_i = 0; temp_i < thread_count; temp_i ++)
+                {
+                    flag_list[temp_i] = 0;
+                }
+                break;
+            case 4:
+                break;
+        }
+        
+        for (int temp_i = 0; temp_i < thread_count; temp_i ++)
+        {
+            flag_list[temp_i] = 0;
         }
 
         if ( iteration % snapshot_frequency == 0 )
@@ -152,7 +190,10 @@ main ( int argc, char **argv )
     t_total = WALLTIME(t_stop) - WALLTIME(t_start);
     printf ( "%.2lf seconds total runtime\n", t_total );
 
+    // free pthread stuff
     free(thread_handles);
+    free(flag_list);
+
     domain_finalize();
 
     exit ( EXIT_SUCCESS );
@@ -163,21 +204,24 @@ main ( int argc, char **argv )
 void*
 pthread_fat_step_func( void * rank)
 {
+    // threaded version of time_step + boundary_condition
+    // domain is a list of lower and upper y values for the divided domains
+    // domains are divided in the y direction
     int_t domain[2];
     long my_rank = (long) rank;
     get_domain(my_rank, domain);
 
-    pthread_boundary_condition(mass[0], 1, rank, domain);
-    pthread_boundary_condition(mass_velocity_x[0], -1, rank, domain);
-    pthread_boundary_condition(mass_velocity_y[0], -1, rank, domain);
+    pthread_boundary_condition(mass[0], 1, my_rank, domain);
+    pthread_boundary_condition(mass_velocity_x[0], -1, my_rank, domain);
+    pthread_boundary_condition(mass_velocity_y[0], -1, my_rank, domain);
 
-    pthread_time_step(rank, domain);
+    pthread_time_step(my_rank, domain);
 }
 
 void 
 pthread_time_step ( long rank, int_t* domain )
 {
-    //printf("Hello time step %ld, a: %ld, b %ld \n", my_rank, domain[0], domain[1]);
+    // threaded version of time_step function
 
     for ( int_t y=domain[0]; y<=domain[1]; y++ )
         for ( int_t x=1; x<=N; x++ )
@@ -233,13 +277,35 @@ pthread_time_step ( long rank, int_t* domain )
             );
         }
     
-    pthread_mutex_lock(&mutex);
-    flag++;
-    pthread_mutex_unlock(&mutex);
-    //printf("flag : %d \n",flag);
-    while( flag < thread_count );
+    // dependepent section of the computation
+    switch (barrier_option)
+    {
+        case 1:
+            pthread_mutex_lock(&mutex);
+            flag++;
+            pthread_mutex_unlock(&mutex);
+            //printf("flag : %d \n",flag);
+            while( flag < thread_count );
+            break;
+        
+        case 2:
+            flag_list[rank] = 1;
+            while(flag_list[(rank-1)%thread_count] != 1 && flag_list[(rank+1)%thread_count] != 1);
 
+            break;
 
+        case 3:
+            flag_list[rank] = 1;
+            while(flag_list[clamp(rank-1,0,thread_count)] != 1 && flag_list[clamp(rank+1,0,thread_count)] != 1);
+
+            break;
+
+        case 4:
+            ;
+            int ret = pthread_barrier_wait(&barrier);
+            break;
+    }
+    
     for ( int_t y=domain[0]; y<=domain[1]; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -257,7 +323,9 @@ pthread_time_step ( long rank, int_t* domain )
                          + ( PNV(y+1,x) - PNV(y-1,x) ) / (2*dx)
             );
         }
-}
+    
+    //flag_list[rank] = 0;
+}   
 
 void
 pthread_boundary_condition ( real_t *domain_variable, int sign, long rank, int_t * domain )
@@ -297,7 +365,7 @@ pthread_boundary_condition ( real_t *domain_variable, int sign, long rank, int_t
 void
 get_domain( long rank, int_t* domain )
 {
-    // get domain of thread
+    // get upper and lower y value for the horizontal domain slices
     if( rank == thread_count)
     {
         domain[0] = 1 + rank*(N/thread_count);

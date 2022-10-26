@@ -43,6 +43,7 @@ real_t
     dx,
     dt;
 
+
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
 #define PNU(y,x)        mass_velocity_x[0][(y)*(N+2)+(x)]
@@ -71,10 +72,14 @@ swap ( real_t** t1, real_t** t2 )
 	*t2 = tmp;
 }
 
+// NUMBER OF THREADS!
+int thread_count = 2;
+// ^^^^^^
 
 int
 main ( int argc, char **argv )
 {
+    omp_set_num_threads(thread_count);
 
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
@@ -93,11 +98,15 @@ main ( int argc, char **argv )
 
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
+
         boundary_condition ( mass[0], 1 );
         boundary_condition ( mass_velocity_x[0], -1 );
         boundary_condition ( mass_velocity_y[0], -1 );
 
+        
         time_step();
+
+
 
         if ( iteration % snapshot_frequency == 0 )
         {
@@ -128,6 +137,7 @@ main ( int argc, char **argv )
 void
 time_step ( void )
 {
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -135,12 +145,14 @@ time_step ( void )
             V(y,x) = PNV(y,x) / PN(y,x);
         }
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
             PNUV(y,x) = PN(y,x) * U(y,x) * V(y,x);
         }
 
+    #pragma omp parallel for
     for ( int_t y=0; y<=N+1; y++ )
         for ( int_t x=0; x<=N+1; x++ )
         {
@@ -150,6 +162,7 @@ time_step ( void )
                     + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
         }
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -159,6 +172,7 @@ time_step ( void )
             );
         }
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -168,6 +182,7 @@ time_step ( void )
             );
         }
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -188,9 +203,13 @@ boundary_condition ( real_t *domain_variable, int sign )
     VAR(   0, N+1 ) = sign*VAR(   2, N-1 );
     VAR( N+1, N+1 ) = sign*VAR( N-1, N-1 );
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ ) VAR(   y, N+1 ) = sign*VAR(   y, N-1 );
+    #pragma omp parallel for
     for ( int_t x=1; x<=N; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
+    #pragma omp parallel for
     for ( int_t x=1; x<=N; x++ ) VAR( N+1, x   ) = sign*VAR( N-1, x   );
     #undef VAR
 }
@@ -214,6 +233,7 @@ domain_init ( void )
     acceleration_x = calloc ( (N+2)*(N+2), sizeof(real_t) );
     acceleration_y = calloc ( (N+2)*(N+2), sizeof(real_t) );
 
+    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
     {
         for ( int_t x=1; x<=N; x++ )
