@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <math.h>
+#include <cuda.h>
 
 #include "../inc/argument_utils.h"
 
@@ -17,7 +18,9 @@ typedef double real_t;
 int_t
     N,
     max_iteration,
-    snapshot_frequency;
+    snapshot_frequency,
+    // number of elements
+    elements;
 
 const real_t
     domain_size = 10.0,
@@ -55,6 +58,7 @@ real_t
     dx,
     dt;
 
+
 #define PN(y,x)         mass_0[(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass_1[(y)*(N+2)+(x)]
 #define PNU(y,x)        mass_velocity_x_0[(y)*(N+2)+(x)]
@@ -77,18 +81,28 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
     }
 }
 
-void time_step (real_t *velocity_x, real_t *velocity_y,
-		real_t *acceleration_x, real_t *acceleration_y,
-		real_t *mass_velocity_x_0, real_t *mass_velocity_x_1,
-		real_t *mass_velocity_y_0, real_t *mass_velocity_y_1,
-		real_t *mass_velocity, real_t *mass_0, real_t *mass_1
+// the two time step kernels for the serial cuda implementation
+void __global__ time_step_1_serial (real_t *velocity_x, real_t *velocity_y,
+                    real_t *acceleration_x, real_t *acceleration_y,
+                    real_t *mass_velocity_x_0, real_t *mass_velocity_y_0,
+                    real_t *mass_velocity, real_t *mass_0,
+                    real_t dt, real_t dx, int_t N
+);
+void __global__ time_step_2_serial (real_t *acceleration_x, real_t *acceleration_y,
+                    real_t *mass_velocity_x_0, real_t *mass_velocity_x_1,
+                    real_t *mass_velocity_y_0, real_t *mass_velocity_y_1,
+                    real_t *mass_velocity, real_t *mass_0, real_t *mass_1,
+                    real_t dt, real_t dx, int_t N
 );
 
 // TODO: Rewrite boundary_condition as a device function.
-void boundary_condition ( real_t *domain_variable, int sign );
+void __device__ boundary_condition_serial ( real_t *domain_variable, int sign, int_t N );
 void domain_init ( void );
 void domain_save ( int_t iteration );
 void domain_finalize ( void );
+
+// generate grid and blocks size for some N
+void get_dims(N,dim3* grid_dim, dim*3 block_dim );
 
 // Pthreads threaded domain save function
 void *domain_save_threaded ( void *iter );
@@ -107,6 +121,7 @@ int
 main ( int argc, char **argv )
 {
 
+    int is_parallel = 0;
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
     {
@@ -120,14 +135,46 @@ main ( int argc, char **argv )
 
     domain_init();
 
+    dim3  
+        grid_dim, 
+        block_dim;
+
+    switch (is_parallel)
+    {
+    case 1:
+        get_dims(N,&grid_dim, &block_dim);
+        break;
+    
+    default:
+        break;
+    }
+
+
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
-        time_step(	h_velocity_x, 		h_velocity_y,
-			h_acceleration_x, 	h_acceleration_y,
-			h_mass_velocity_x_0,	h_mass_velocity_x_1,
-			h_mass_velocity_y_0,	h_mass_velocity_y_1,
-			h_mass_velocity, 	h_mass_0, h_mass_1
-	);
+        switch (is_parallel)
+        {
+        case 0:
+            time_step_1_serial<<<1,1>>>(	d_velocity_x, 		d_velocity_y,
+                            d_acceleration_x, 	d_acceleration_y,
+                            d_mass_velocity_x_0,   d_mass_velocity_y_0,	
+                            d_mass_velocity, 	d_mass_0, 
+                            dt, dx, N
+	        );
+            cudaDeviceSynchronize();
+            time_step_2_serial<<<1,1>>>( d_acceleration_x, 	d_acceleration_y,
+                            d_mass_velocity_x_0,	d_mass_velocity_x_1,
+                            d_mass_velocity_y_0,	d_mass_velocity_y_1,
+                            d_mass_velocity, 	d_mass_0, d_mass_1,
+                            dt, dx, N
+	        );
+            cudaDeviceSynchronize();
+            break;
+        
+        default:
+            break;
+        }
+
 
         // TODO: Launch time_step kernels
 
@@ -142,14 +189,15 @@ main ( int argc, char **argv )
 
 
             // TODO: Copy the masses from the device to host prior to domain_save
+            cudaMemcpy( h_mass_0, d_mass_0, sizeof(real_t) * elements, cudaMemcpyDeviceToHost );
             domain_save ( iteration );
         }
 
         // TODO: Swap device buffer pointers between iterations
 
-        swap ( &h_mass_0, &h_mass_1 );
-        swap ( &h_mass_velocity_x_0, &h_mass_velocity_x_1 );
-        swap ( &h_mass_velocity_y_0, &h_mass_velocity_y_1 );
+        swap ( &d_mass_0, &d_mass_1 );
+        swap ( &d_mass_velocity_x_0, &d_mass_velocity_x_1 );
+        swap ( &d_mass_velocity_y_0, &d_mass_velocity_y_1 );
     }
 
     domain_finalize();
@@ -164,17 +212,17 @@ main ( int argc, char **argv )
 // grid must be synchronized after calculating the accelerations (DU, DV).
 // If the grid is not synchronized, data dependencies cannot be guaranteed.
 
-void
-time_step (real_t *velocity_x, real_t *velocity_y,
+void __global__
+time_step_1_serial (real_t *velocity_x, real_t *velocity_y,
 		real_t *acceleration_x, real_t *acceleration_y,
-		real_t *mass_velocity_x_0, real_t *mass_velocity_x_1,
-		real_t *mass_velocity_y_0, real_t *mass_velocity_y_1,
-		real_t *mass_velocity, real_t *mass_0, real_t *mass_1
+		real_t *mass_velocity_x_0, real_t *mass_velocity_y_0,
+		real_t *mass_velocity, real_t *mass_0,
+        real_t dt, real_t dx, int_t N
 )
 {
-    boundary_condition ( mass_0, 1 );
-    boundary_condition ( mass_velocity_x_0, -1 );
-    boundary_condition ( mass_velocity_y_0, -1 );
+    boundary_condition_serial ( mass_0, 1, N );
+    boundary_condition_serial ( mass_velocity_x_0, -1, N );
+    boundary_condition_serial ( mass_velocity_y_0, -1, N );
 
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
@@ -197,7 +245,87 @@ time_step (real_t *velocity_x, real_t *velocity_y,
             DV(y,x) = PN(y,x) * V(y,x) * V(y,x)
                     + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
         }
+}
 
+void __global__
+time_step_2_serial (real_t *acceleration_x, real_t *acceleration_y,
+		real_t *mass_velocity_x_0, real_t *mass_velocity_x_1,
+		real_t *mass_velocity_y_0, real_t *mass_velocity_y_1,
+		real_t *mass_velocity, real_t *mass_0, real_t *mass_1,
+        real_t dt, real_t dx, int_t N
+)
+{
+    for ( int_t y=1; y<=N; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNU_next(y,x) = 0.5*( PNU(y,x+1) + PNU(y,x-1) ) - dt*(
+                            ( DU(y,x+1) - DU(y,x-1) ) / (2*dx)
+                          + ( PNUV(y,x+1) - PNUV(y,x-1) ) / (2*dx)
+            );
+        }
+
+    for ( int_t y=1; y<=N; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNV_next(y,x) = 0.5*( PNV(y+1,x) + PNV(y-1,x) ) - dt*(
+                            ( DV(y+1,x) - DV(y-1,x) ) / (2*dx)
+                          + ( PNUV(y+1,x) - PNUV(y-1,x) ) / (2*dx)
+            );
+        }
+
+    for ( int_t y=1; y<=N; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PN_next(y,x) = 0.25*( PN(y,x+1) + PN(y,x-1) + PN(y+1,x) + PN(y-1,x) ) - dt*(
+                           ( PNU(y,x+1) - PNU(y,x-1) ) / (2*dx)
+                         + ( PNV(y+1,x) - PNV(y-1,x) ) / (2*dx)
+            );
+        }
+}
+void __global__
+time_step_1_parallel (real_t *velocity_x, real_t *velocity_y,
+		real_t *acceleration_x, real_t *acceleration_y,
+		real_t *mass_velocity_x_0, real_t *mass_velocity_y_0,
+		real_t *mass_velocity, real_t *mass_0,
+        real_t dt, real_t dx, int_t N
+)
+{
+    boundary_condition_serial ( mass_0, 1, N );
+    boundary_condition_serial ( mass_velocity_x_0, -1, N );
+    boundary_condition_serial ( mass_velocity_y_0, -1, N );
+
+    for ( int_t y=1; y<=N; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            U(y,x) = PNU(y,x) / PN(y,x);
+            V(y,x) = PNV(y,x) / PN(y,x);
+        }
+
+    for ( int_t y=1; y<=N; y++ )
+        for ( int_t x=1; x<=N; x++ )
+        {
+            PNUV(y,x) = PN(y,x) * U(y,x) * V(y,x);
+        }
+
+    for ( int_t y=0; y<=N+1; y++ )
+        for ( int_t x=0; x<=N+1; x++ )
+        {
+            DU(y,x) = PN(y,x) * U(y,x) * U(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+            DV(y,x) = PN(y,x) * V(y,x) * V(y,x)
+                    + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
+        }
+}
+
+
+void __global__
+time_step_2_parallel (real_t *acceleration_x, real_t *acceleration_y,
+		real_t *mass_velocity_x_0, real_t *mass_velocity_x_1,
+		real_t *mass_velocity_y_0, real_t *mass_velocity_y_1,
+		real_t *mass_velocity, real_t *mass_0, real_t *mass_1,
+        real_t dt, real_t dx, int_t N
+)
+{
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -228,8 +356,8 @@ time_step (real_t *velocity_x, real_t *velocity_y,
 
 
 // TODO: Rewrite boundary_condition as a device function.
-void
-boundary_condition ( real_t *domain_variable, int sign )
+void __device__
+boundary_condition_serial ( real_t *domain_variable, int sign, int_t N )
 {
     #define VAR(y,x) domain_variable[(y)*(N+2)+(x)]
     VAR(   0, 0   ) = sign*VAR(   2, 2   );
@@ -248,7 +376,7 @@ boundary_condition ( real_t *domain_variable, int sign )
 void
 domain_init ( void )
 {
-    int elements = (N+2)*(N+2);
+    elements = (N+2)*(N+2);
 
     // TODO: Allocate device buffers for masses, velocities and accelerations.
     // -----------------------------------------------------
@@ -266,6 +394,21 @@ domain_init ( void )
     h_velocity_y = (real_t *)calloc ( elements, sizeof(real_t) );
     h_acceleration_x = (real_t *)calloc ( elements, sizeof(real_t) );
     h_acceleration_y = (real_t *)calloc ( elements, sizeof(real_t) );
+
+    cudaMalloc ( &d_mass_0, sizeof(real_t) * elements );
+    cudaMalloc ( &d_mass_1, sizeof(real_t) * elements );
+
+    cudaMalloc ( &d_mass_velocity_x_0, sizeof(real_t) * elements);
+    cudaMalloc ( &d_mass_velocity_x_1, sizeof(real_t) * elements);
+    cudaMalloc ( &d_mass_velocity_y_0, sizeof(real_t) * elements);
+    cudaMalloc ( &d_mass_velocity_y_1, sizeof(real_t) * elements);
+
+    cudaMalloc ( &d_mass_velocity, sizeof(real_t) * elements);
+
+    cudaMalloc ( &d_velocity_x, sizeof(real_t) * elements);
+    cudaMalloc ( &d_velocity_y, sizeof(real_t) * elements);
+    cudaMalloc ( &d_acceleration_x, sizeof(real_t) * elements);
+    cudaMalloc ( &d_acceleration_y, sizeof(real_t) * elements);
 
     for ( int_t y=1; y<=N; y++ )
     {
@@ -291,6 +434,21 @@ domain_init ( void )
 
     dx = domain_size / (real_t) N;
     dt = 5e-2;
+
+    cudaMemcpy( d_mass_0, h_mass_0, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_mass_1, h_mass_1, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    
+    cudaMemcpy( d_mass_velocity_x_0, h_mass_velocity_x_0, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_mass_velocity_x_1, h_mass_velocity_x_1, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_mass_velocity_y_0, h_mass_velocity_y_0, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_mass_velocity_y_1, h_mass_velocity_y_1, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+
+    cudaMemcpy( d_mass_velocity, h_mass_velocity, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+
+    cudaMemcpy( d_velocity_x, h_velocity_x, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_velocity_y, h_velocity_y, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_acceleration_x, h_acceleration_x, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
+    cudaMemcpy( d_acceleration_y, h_acceleration_y, sizeof(real_t) * elements, cudaMemcpyHostToDevice );
 }
 
 
@@ -331,5 +489,15 @@ domain_finalize ( void )
     free ( h_acceleration_x );
     free ( h_acceleration_y );
 
-    // TODO: Free device arrays
+    cudaFree ( d_mass_0 );
+    cudaFree ( d_mass_1 );
+    cudaFree ( d_mass_velocity_x_0 );
+    cudaFree ( d_mass_velocity_x_1 );
+    cudaFree ( d_mass_velocity_y_0 );
+    cudaFree ( d_mass_velocity_y_1 );
+    cudaFree ( d_mass_velocity );
+    cudaFree ( d_velocity_x );
+    cudaFree ( d_velocity_y );
+    cudaFree ( d_acceleration_x );
+    cudaFree ( d_acceleration_y );
 }
