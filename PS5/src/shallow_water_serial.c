@@ -4,22 +4,12 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <math.h>
-#include <sys/time.h>
-#include <omp.h>
 
 #include "../inc/argument_utils.h"
 
 
 typedef int64_t int_t;
 typedef double real_t;
-
-#define WALLTIME(t) ((double)(t).tv_sec + 1e-6 * (double)(t).tv_usec)
-
-struct timeval
-    t_start,
-    t_stop;
-double
-    t_total;
 
 int_t
     N,
@@ -42,7 +32,6 @@ real_t
     *acceleration_y = NULL,
     dx,
     dt;
-
 
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
@@ -72,14 +61,10 @@ swap ( real_t** t1, real_t** t2 )
 	*t2 = tmp;
 }
 
-// NUMBER OF THREADS!
-int thread_count = 2;
-// ^^^^^^
 
 int
 main ( int argc, char **argv )
 {
-    omp_set_num_threads(thread_count);
 
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
@@ -94,24 +79,18 @@ main ( int argc, char **argv )
 
     domain_init();
 
-    gettimeofday ( &t_start, NULL );
-
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
-
         boundary_condition ( mass[0], 1 );
         boundary_condition ( mass_velocity_x[0], -1 );
         boundary_condition ( mass_velocity_y[0], -1 );
 
-        
         time_step();
-
-
 
         if ( iteration % snapshot_frequency == 0 )
         {
             printf (
-                "Iteration %lld of %lld, (%.2lf%% complete)\n",
+                "Iteration %ld of %ld, (%.2lf%% complete)\n",
                 iteration,
                 max_iteration,
                 100.0 * (real_t) iteration / (real_t) max_iteration
@@ -124,10 +103,6 @@ main ( int argc, char **argv )
         swap ( &mass_velocity_y[0], &mass_velocity_y[1] );
     }
 
-    gettimeofday ( &t_stop, NULL );
-    t_total = WALLTIME(t_stop) - WALLTIME(t_start);
-    printf ( "%.2lf seconds total runtime\n", t_total );
-
     domain_finalize();
 
     exit ( EXIT_SUCCESS );
@@ -137,7 +112,6 @@ main ( int argc, char **argv )
 void
 time_step ( void )
 {
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -145,14 +119,12 @@ time_step ( void )
             V(y,x) = PNV(y,x) / PN(y,x);
         }
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
             PNUV(y,x) = PN(y,x) * U(y,x) * V(y,x);
         }
 
-    #pragma omp parallel for
     for ( int_t y=0; y<=N+1; y++ )
         for ( int_t x=0; x<=N+1; x++ )
         {
@@ -162,7 +134,6 @@ time_step ( void )
                     + 0.5 * gravity * ( PN(y,x) * PN(y,x) / density );
         }
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -172,7 +143,6 @@ time_step ( void )
             );
         }
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -182,7 +152,6 @@ time_step ( void )
             );
         }
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
         for ( int_t x=1; x<=N; x++ )
         {
@@ -203,13 +172,9 @@ boundary_condition ( real_t *domain_variable, int sign )
     VAR(   0, N+1 ) = sign*VAR(   2, N-1 );
     VAR( N+1, N+1 ) = sign*VAR( N-1, N-1 );
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ ) VAR(   y, 0   ) = sign*VAR(   y, 2   );
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ ) VAR(   y, N+1 ) = sign*VAR(   y, N-1 );
-    #pragma omp parallel for
     for ( int_t x=1; x<=N; x++ ) VAR(   0, x   ) = sign*VAR(   2, x   );
-    #pragma omp parallel for
     for ( int_t x=1; x<=N; x++ ) VAR( N+1, x   ) = sign*VAR( N-1, x   );
     #undef VAR
 }
@@ -233,7 +198,6 @@ domain_init ( void )
     acceleration_x = calloc ( (N+2)*(N+2), sizeof(real_t) );
     acceleration_y = calloc ( (N+2)*(N+2), sizeof(real_t) );
 
-    #pragma omp parallel for
     for ( int_t y=1; y<=N; y++ )
     {
         for ( int_t x=1; x<=N; x++ )
@@ -267,7 +231,7 @@ domain_save ( int_t iteration )
     int_t index = iteration / snapshot_frequency;
     char filename[256];
     memset ( filename, 0, 256*sizeof(char) );
-    sprintf ( filename, "data/%.5lld.bin", index );
+    sprintf ( filename, "data/%.5ld.bin", index );
 
     FILE *out = fopen ( filename, "wb" );
     if ( !out )
@@ -275,6 +239,7 @@ domain_save ( int_t iteration )
         fprintf( stderr, "Failed to open file %s\n", filename );
         exit(1);
     }
+    //fwrite ( mass[0], (N+2)*(N+2), sizeof(real_t), out );
     for ( int_t y = 1; y <= N; y++ )
     {
         fwrite ( &mass[0][y*(N+2)+1], N, sizeof(real_t), out );

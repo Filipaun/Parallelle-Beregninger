@@ -1,6 +1,6 @@
 CC:=gcc
 PARALLEL_CC:=gcc
-CFLAGS+= -fopenmp
+CFLAGS+= -fopenmp -O3
 LDLIBS+=-lm -pthread
 
 SERIAL_SRC_FILES:=src/shallow_water_serial.c src/argument_utils.c

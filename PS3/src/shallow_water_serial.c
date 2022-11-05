@@ -4,12 +4,21 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <math.h>
+#include <sys/time.h>
 
 #include "../inc/argument_utils.h"
 
 
 typedef int64_t int_t;
 typedef double real_t;
+
+#define WALLTIME(t) ((double)(t).tv_sec + 1e-6 * (double)(t).tv_usec)
+
+struct timeval
+    t_start,
+    t_stop;
+double
+    t_total;
 
 int_t
     N,
@@ -79,6 +88,8 @@ main ( int argc, char **argv )
 
     domain_init();
 
+    gettimeofday ( &t_start, NULL );
+
     for ( int_t iteration = 0; iteration <= max_iteration; iteration++ )
     {
         boundary_condition ( mass[0], 1 );
@@ -103,6 +114,10 @@ main ( int argc, char **argv )
         swap ( &mass_velocity_y[0], &mass_velocity_y[1] );
     }
 
+    gettimeofday ( &t_stop, NULL );
+    t_total = WALLTIME(t_stop) - WALLTIME(t_start);
+    printf ( "%.2lf seconds total runtime\n", t_total );
+    
     domain_finalize();
 
     exit ( EXIT_SUCCESS );
