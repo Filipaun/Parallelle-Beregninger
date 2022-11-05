@@ -44,9 +44,12 @@ real_t
     dt;
 
 // number of threads
-int thread_count = 2;
+int thread_count = 128;
 int flag = 0;
+int* flag_list;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int barrier_option = 3;
 
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
@@ -83,6 +86,23 @@ swap ( real_t** t1, real_t** t2 )
 	*t2 = tmp;
 }
 
+int
+clamp (int my_var, int lower, int upper)
+{
+    if (my_var < lower) 
+    {
+        return lower;
+    }
+    else if (my_var > upper) 
+    {
+        return upper;
+    }
+    else 
+    {
+        return my_var;
+    }
+}
+
 
 int
 main ( int argc, char **argv )
@@ -92,6 +112,8 @@ main ( int argc, char **argv )
     pthread_t* thread_handles;
 
     thread_handles = malloc( thread_count * sizeof(pthread_t));
+    flag_list = calloc(thread_count, sizeof(int));
+    
 
     OPTIONS *options = parse_args( argc, argv );
     if ( !options )
@@ -152,6 +174,7 @@ main ( int argc, char **argv )
     t_total = WALLTIME(t_stop) - WALLTIME(t_start);
     printf ( "%.2lf seconds total runtime\n", t_total );
 
+    free(flag_list);
     free(thread_handles);
     domain_finalize();
 
@@ -233,11 +256,31 @@ pthread_time_step ( long rank, int_t* domain )
             );
         }
     
-    pthread_mutex_lock(&mutex);
-    flag++;
-    pthread_mutex_unlock(&mutex);
-    //printf("flag : %d \n",flag);
-    while( flag < thread_count );
+
+    switch (barrier_option)
+    {
+        case 1:
+            pthread_mutex_lock(&mutex);
+            flag++;
+            pthread_mutex_unlock(&mutex);
+
+            while(flag < thread_count);
+            break;
+        
+        case 2:
+            flag_list[rank] = 1;
+            while( flag_list[(rank-1)%thread_count] != 1 && flag_list[(rank+1)%thread_count] != 1);
+            break;
+
+        case 3:
+            flag_list[rank] = 1;
+            while( flag_list[clamp(rank-1,0,thread_count)] != 1 && flag_list[clamp(rank+1,0,thread_count)] != 1);
+            break;
+        
+        default:
+            break;
+
+    }
 
 
     for ( int_t y=domain[0]; y<=domain[1]; y++ )
