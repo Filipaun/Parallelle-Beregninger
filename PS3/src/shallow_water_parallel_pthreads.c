@@ -54,6 +54,8 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_barrier_t barrier;
 
 
+int barrier_option = 3;
+
 #define PN(y,x)         mass[0][(y)*(N+2)+(x)]
 #define PN_next(y,x)    mass[1][(y)*(N+2)+(x)]
 #define PNU(y,x)        mass_velocity_x[0][(y)*(N+2)+(x)]
